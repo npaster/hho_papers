@@ -1,0 +1,155 @@
+# coding=utf-8
+# --------------------------------------------------------------------
+# Copyright (C) 1991 - 2024 - EDF R&D - www.code-aster.org
+# This file is part of code_aster.
+#
+# code_aster is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# code_aster is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with code_aster.  If not, see <http://www.gnu.org/licenses/>.
+# --------------------------------------------------------------------
+from code_aster.Commands import *
+from code_aster import CA
+
+DEBUT(CODE=_F(NIV_PUB_WEB="INTERNET"))
+
+# unit: g - mm - ms - MPa - N
+# velocity: m.s-1 = mm.ms-1
+
+kg = 1e3  # g -> kg
+m = 1e3  # mm -> m
+s = 1e3  # ms -> s
+mis = 1e-3  # ms -> micros
+GPa = 1e3  # MPa -> GPa
+
+
+mesh0 = LIRE_MAILLAGE(FORMAT="MED")
+
+mesh0 = MODI_MAILLAGE(
+    reuse=mesh0,
+    MAILLAGE=mesh0,
+    ORIE_PEAU=_F(
+        GROUP_MA_PEAU=("LEFT", "RIGHT", "BOTTOM", "S_UP"),
+    ),
+)
+
+mesh = CREA_MAILLAGE(MAILLAGE=mesh0, MODI_HHO=_F(TOUT="OUI"))
+
+model = AFFE_MODELE(
+    MAILLAGE=mesh,
+    AFFE=(
+        _F(
+            TOUT="OUI",
+            MODELISATION="3D_HHO",
+            FORMULATION="QUADRATIQUE",
+            PHENOMENE="MECANIQUE",
+        ),
+    ),
+)
+
+COND_LIM = AFFE_CHAR_CINE(
+    MODELE=model,
+    MECA_IMPO=(
+        _F(GROUP_MA="LEFT", DY=0.0),
+        _F(GROUP_MA="RIGHT", DX=0.0),
+        _F(GROUP_MA="BOTTOM", DZ=0.0),
+    ),
+)
+
+
+# Material parameters - Copper
+E = 120 * GPa
+H = 0.1 * GPa
+ET = (E * H) / (H + E)
+mater = DEFI_MATERIAU(
+    ELAS=_F(E=E, RHO=8930 * (kg / (m**3)), NU=0.35),
+    ECRO_LINE=_F(D_SIGM_EPSI=ET, SY=0.4 * GPa),
+    HHO=_F(COEF_STAB=10 * E),
+)
+
+cham_mater = AFFE_MATERIAU(MAILLAGE=mesh, AFFE=(_F(TOUT="OUI", MATER=mater),))
+
+
+listTimes = DEFI_LIST_REEL(
+    DEBUT=0.0,
+    INTERVALLE=(_F(JUSQU_A=40.0 * mis, NOMBRE=500),),
+)
+
+DEFLIST = DEFI_LIST_INST(
+    DEFI_LIST=_F(LIST_INST=listTimes),
+    ECHEC=_F(ACTION="DECOUPE", SUBD_METHODE="MANUEL", SUBD_PAS=2, SUBD_NIVEAU=4),
+)
+
+# define discrete object
+phys_pb = CA.PhysicalProblem(model, cham_mater)
+
+disc_comp = CA.DiscreteComputation(phys_pb)
+
+hho = CA.HHO(phys_pb)
+
+ZERO_FIELD = hho.projectOnHHOSpace([0.0, 0.0, 0.0])
+VITE_Z = hho.projectOnHHOCellSpace([0.0, 0.0, -227.0 * m / s])
+
+DYNA1 = DYNA_NON_LINE(
+    MODELE=model,
+    CHAM_MATER=cham_mater,
+    ETAT_INIT=_F(DEPL=ZERO_FIELD, VITE=VITE_Z, ACCE=ZERO_FIELD),
+    EXCIT=(
+        _F(
+            CHARGE=COND_LIM,
+        ),
+    ),
+    COMPORTEMENT=_F(RELATION="VMIS_ISOT_LINE", TOUT="OUI", DEFORMATION="GDEF_LOG"),
+    CONVERGENCE=_F(RESI_GLOB_RELA=1.0e-6, ITER_GLOB_MAXI=12),
+    INCREMENT=_F(
+        LIST_INST=DEFLIST,
+        INST_FIN=40 * mis,
+    ),
+    ARCHIVAGE=_F(
+        PAS_ARCH=10,
+    ),
+    METHODE="NEWTON",
+    NEWTON=_F(PREDICTION="TANGENTE", MATRICE="TANGENTE"),
+    SCHEMA_TEMPS=_F(SCHEMA="NEWMARK", FORMULATION="DEPLACEMENT"),
+)
+
+
+DYNA1 = CALC_CHAMP(
+    reuse=DYNA1, CRITERES=("SIEQ_NOEU", "SIEQ_ELGA"), MODELE=model, RESULTAT=DYNA1
+)
+
+deplA_X = RECU_FONCTION(
+    RESULTAT=DYNA1,
+    GROUP_NO="AX",
+    NOM_CHAM="HHO_DEPL",
+    NOM_CMP="DX",
+)
+
+deplA_Y = RECU_FONCTION(
+    RESULTAT=DYNA1,
+    GROUP_NO="AY",
+    NOM_CHAM="HHO_DEPL",
+    NOM_CMP="DY",
+)
+
+IMPR_FONCTION(
+    SEPARATEUR=";",
+    COURBE=(
+        _F(FONCTION=deplA_X),
+        _F(FONCTION=deplA_Y),
+    ),
+    UNITE=21,
+)
+
+IMPR_RESU(FORMAT="MED", RESU=_F(RESULTAT=DYNA1), UNITE=80)
+
+
+FIN()
